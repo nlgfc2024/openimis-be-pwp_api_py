@@ -1,6 +1,7 @@
 # Skeleton scope and migration boundary
 
-Source branch: `mw/develop`. PR base: `release/26.04`. Keep the PR in draft.
+Branch hierarchy: `release/26.04` -> `mw/develop` -> `feature/pwp-api-skeleton`.
+PR source: `feature/pwp-api-skeleton`. PR base: `mw/develop`. Keep the PR in draft.
 
 | Current task | Issue | Deliverable |
 |---|---|---|

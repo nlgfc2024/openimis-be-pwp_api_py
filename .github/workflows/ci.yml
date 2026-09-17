@@ -1,9 +1,9 @@
 name: PWP skeleton CI
 on:
   push:
-    branches: [mw/develop]
+    branches: [mw/develop, feature/pwp-api-skeleton]
   pull_request:
-    branches: [release/26.04]
+    branches: [mw/develop]
   workflow_dispatch:
 
 permissions:
