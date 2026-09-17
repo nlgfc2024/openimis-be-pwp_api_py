@@ -1,4 +1,0 @@
-# flake8: noqa
-from .status_mapping import PaymentNoticeStatusMapping
-from .payment_detail_status_mapping import PaymentNoticePaymentDetailStatusMapping
-from .payment_status_mapping import PaymentNoticePaymentStatusMapping

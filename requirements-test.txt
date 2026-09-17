@@ -1,0 +1,6 @@
+Django>=4.2,<5.0
+djangorestframework>=3.14,<4
+drf-spectacular>=0.25,<1
+aiohttp>=3.13.3,<4
+build>=1,<2
+flake8>=7,<8
