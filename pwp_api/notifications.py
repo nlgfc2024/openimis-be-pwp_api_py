@@ -10,7 +10,7 @@ import json
 from .configuration import get_configuration
 from .models import NotificationResult, Subscription
 from .registry import registry
-from .serializers import endpoint_allowed
+from .validation import endpoint_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def notify_subscribers(resource, pk, client=None):
         return
     client = client or NotificationClient()
     subscriptions = Subscription.objects.filter(
-        resource=resource, active=True, expires_at__gt=timezone.now(),
+        resource=resource, enabled=True, is_deleted=False, expires_at__gt=timezone.now(),
     ).select_related("owner")
     for subscription in subscriptions:
         if not adapter.can_read(subscription.owner) or not endpoint_allowed(subscription.endpoint):

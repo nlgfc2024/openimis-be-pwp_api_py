@@ -4,8 +4,10 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
 from .authentication import issue_token
-from .permissions import ResourcePermission
-from .serializers import LoginRequestSerializer, LoginResponseSerializer, SubscriptionSerializer
+from .permissions import ResourcePermission, SubscriptionPermission
+from .serializers import (
+    LoginRequestSerializer, LoginResponseSerializer, SubscriptionSerializer, require_service_success,
+)
 from .services import SubscriptionService
 
 
@@ -25,7 +27,7 @@ class ResourceViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class SubscriptionViewSet(viewsets.ModelViewSet):
-    permission_classes = (permissions.IsAuthenticated,)
+    permission_classes = (permissions.IsAuthenticated, SubscriptionPermission,)
     serializer_class = SubscriptionSerializer
     pagination_class = BoundedPagination
 
@@ -33,10 +35,12 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         if getattr(self, "swagger_fake_view", False):
             from .models import Subscription
             return Subscription.objects.none()
-        return SubscriptionService(self.request.user).get_queryset()
+        return SubscriptionService(self.request.user).get_queryset(
+            operation=SubscriptionPermission.operations.get(self.request.method, "unsupported"),
+        )
 
     def perform_destroy(self, instance):
-        SubscriptionService(self.request.user).delete(instance)
+        require_service_success(SubscriptionService(self.request.user).delete({"id": instance.pk}))
 
 
 class LoginView(generics.GenericAPIView):

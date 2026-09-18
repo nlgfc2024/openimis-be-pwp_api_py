@@ -14,16 +14,16 @@ class ExampleService(ResourceService):
 
 class ExampleConverter(ResourceConverter):
     def to_representation(self, instance):
-        return {"id": instance.pk, "name": instance.username}
+        return {"id": str(instance.pk), "name": instance.username}
 
 
 class ExampleSerializer(ResourceSerializer):
-    id = serializers.IntegerField(read_only=True)
+    id = serializers.UUIDField(read_only=True)
     name = serializers.CharField(read_only=True)
 
 
 example = ResourceAdapter(
     name="Example", service_class=ExampleService, converter_class=ExampleConverter,
-    serializer_class=ExampleSerializer, read_permissions=("pwp_api.view_subscription",),
+    serializer_class=ExampleSerializer, read_permissions=("900001",),
     subscriptions_enabled=True,
 )

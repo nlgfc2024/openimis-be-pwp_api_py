@@ -1,6 +1,6 @@
 # openIMIS PWP API module skeleton
 
-Reusable infrastructure for future Mlatho integrations. No Patient, Group,
+Reusable infrastructure for future Mlatho integrations. No Individual, Group,
 insurance or other business-data source is implemented or registered yet.
 
 | Identity | Value |
@@ -68,7 +68,7 @@ versioned JSON and DRF errors, not the inherited FHIR payload format.
   `notifications.publish_resource(resource_name, primary_key)`.
 
 The [test-only Example adapter](tests/adapters.py) demonstrates the interface with
-Django user fixtures. It is not a Mlatho resource and is excluded from the wheel.
+real openIMIS user/role fixtures. It is not a Mlatho resource and is excluded from the wheel.
 Do not expose arbitrary models, full json_ext fields, or unrestricted querysets.
 
 ## Subscription configuration and limitations
@@ -81,15 +81,35 @@ PWP_API = {
     "notifications_enabled": False,
     "notification_endpoints": [],  # exact trusted HTTPS URLs, no wildcards
     "notification_timeout": 10,
+    "subscription_search_perms": ["158001"],
+    "subscription_create_perms": ["158002"],
+    "subscription_update_perms": ["158003"],
+    "subscription_delete_perms": ["158004"],
 }
 PWP_API_ADAPTERS = []
 ```
 
 Subscription input: `resource`, `endpoint`, `active`, `expires_at`. Ownership is
 assigned from the authenticated user, never the payload. Lists, details and
-mutations are owner-scoped. Creation/update requires resource rights and an
-approved HTTPS destination. No arbitrary ORM criteria or caller-supplied
-credential headers are accepted.
+mutations are owner-scoped and require the configured operation right.
+Creation/update additionally requires resource rights and an approved HTTPS destination. No arbitrary ORM criteria or caller-supplied
+credential headers are accepted. The API's `active` flag maps to `enabled` internally
+and defaults to false; it controls delivery, not record deletion.
+
+Subscription search/create/update/delete deliberately reuse rights 158001–158004
+by default. Existing holders of those FHIR subscription rights can perform the
+corresponding PWP operation, subject to ownership and resource access. Deployments
+that require separate PWP authorization can override these lists. Empty lists deny
+access. Defaults are exported for core permission discovery. This module does not
+regrant or revoke shared role rights in migrations; existing role assignments and
+core's IMIS administrator behavior remain authoritative.
+
+Subscriptions inherit `core.models.HistoryBusinessModel`: actor audit fields,
+versioning, historical snapshots, business validity and soft deletion are retained.
+Mutations call `core.services.BaseService` with `BaseModelValidation`-based checks,
+including for direct service callers. History records include the acting user.
+DELETE marks the subscription deleted and preserves its history and delivery results;
+deleted records are excluded from API queries and notification delivery.
 
 Delivery rechecks recipient rights and recipient-scoped visibility, expiry,
 active status and destination approval. It does not follow redirects. All 2xx
@@ -116,8 +136,11 @@ python -m django spectacular --settings=tests.empty_settings --urlconf=pwp_api.s
 python -m build
 ```
 
-CI installs this package with --no-deps after isolated test dependencies to check
-that no domain module is imported. Full assembled-host validation is still
+CI installs a pinned Mlatho core revision and exercises its actual models,
+role rights, services, validation and history against SQLite. Two minimal test-only
+location models satisfy unused core foreign keys; they provide no location behavior.
+Core/location legacy migrations are not run in this harness; PWP migrations are.
+Full assembled-host authentication and PostgreSQL migration validation remain
 required before deployment. Initial targets: Python 3.10–3.12 and Django 4.2.
 Inherited FHIR publication automation is removed; no package is auto-published.
 
@@ -126,10 +149,11 @@ Inherited FHIR publication automation is removed; no package is auto-published.
 Current PR tasks: [#1](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/1),
 [#2](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/2),
 [#3](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/3),
-[#4](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/4).
+[#4](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/4),
+[#9](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/9) (retain core infrastructure).
 
 Separate future PRs:
-- [#5](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/5): Patient from individual.Individual.
+- [#5](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/5): Individual from individual.Individual.
 - [#6](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/6): Group from individual.Group / GroupIndividual.
 - [#7](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/7): durable delivery and mobile synchronization.
 

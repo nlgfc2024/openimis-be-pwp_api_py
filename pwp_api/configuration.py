@@ -5,6 +5,10 @@ from django.conf import settings
 MODULE_NAME = "pwp_api"
 DEFAULTS = {
     "notifications_enabled": False,
+    "subscription_search_perms": ["158001"],
+    "subscription_create_perms": ["158002"],
+    "subscription_update_perms": ["158003"],
+    "subscription_delete_perms": ["158004"],
     "notification_endpoints": [],
     "notification_timeout": 10,
 }

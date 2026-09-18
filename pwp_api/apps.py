@@ -1,5 +1,7 @@
 from django.apps import AppConfig
 
+from .configuration import DEFAULTS as DEFAULT_CFG  # noqa: F401; core permission discovery
+
 
 class PwpApiConfig(AppConfig):
     name = "pwp_api"

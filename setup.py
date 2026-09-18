@@ -25,7 +25,9 @@ setup(
         "djangorestframework>=3.14,<4",
         "drf-spectacular>=0.25,<1",
         "aiohttp>=3.13.3,<4",
-        "openimis-be-core",
+        "openimis-be-core>=1.11,<2",
+        "django-simple-history>=3.8,<4",
+        "django-dirtyfields>=1.4,<2",
     ],
     classifiers=[
         "Environment :: Web Environment",

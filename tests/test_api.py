@@ -2,8 +2,6 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from django.apps import apps
-from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Permission
 from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.test import TestCase, override_settings
@@ -15,26 +13,27 @@ from pwp_api.models import NotificationResult, Subscription
 from pwp_api.notifications import NotificationClient, notify_subscribers, publish_resource
 from pwp_api.registry import ResourceRegistry
 from tests.adapters import example
+from tests.factories import create_user, grant_right, revoke_right
+from pwp_api.services import SubscriptionService
 
 
 class SkeletonTests(TestCase):
     def setUp(self):
-        self.owner = get_user_model().objects.create_user("owner")
-        self.other = get_user_model().objects.create_user("other")
-        permission = Permission.objects.get(codename="view_subscription", content_type__app_label="pwp_api")
-        self.owner.user_permissions.add(permission)
-        self.other.user_permissions.add(permission)
+        self.owner = create_user("owner")
+        self.other = create_user("other")
         self.client = APIClient()
         self.client.force_authenticate(self.owner)
         self.url = "/pwp_api/v1/subscriptions/"
-        self.data = {"resource": "Example", "endpoint": "https://partner.example/events",
+        self.data = {"resource": "Example", "active": True, "endpoint": "https://partner.example/events",
                      "expires_at": (timezone.now() + timedelta(days=1)).isoformat()}
 
     def subscription(self, owner=None):
-        return Subscription.objects.create(
-            owner=owner or self.owner, resource="Example", endpoint=self.data["endpoint"],
-            expires_at=timezone.now() + timedelta(days=1),
-        )
+        result = SubscriptionService(owner or self.owner).create({
+            "resource": "Example", "endpoint": self.data["endpoint"], "enabled": True,
+            "expires_at": timezone.now() + timedelta(days=1),
+        })
+        self.assertTrue(result["success"], result)
+        return Subscription.objects.get(pk=result["data"]["id"])
 
     def test_identity_and_versioned_routes(self):
         self.assertEqual(apps.get_app_config("pwp_api").__class__.__name__, "PwpApiConfig")
@@ -52,15 +51,15 @@ class SkeletonTests(TestCase):
     def test_resource_service_and_converter_scope(self):
         response = self.client.get("/pwp_api/v1/Example/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["results"], [{"id": self.owner.pk, "name": "owner"}])
+        self.assertEqual(response.data["results"], [{"id": str(self.owner.pk), "name": "owner"}])
         self.assertEqual(self.client.get(f"/pwp_api/v1/Example/{self.other.pk}/").status_code, 404)
         self.assertEqual(self.client.post("/pwp_api/v1/Example/", {}).status_code, 405)
 
     def test_missing_resource_permission_denied(self):
-        user = get_user_model().objects.create_user("no_rights")
+        user = create_user("no_rights", rights=(158002,))
         self.client.force_authenticate(user)
         self.assertEqual(self.client.get("/pwp_api/v1/Example/").status_code, 403)
-        self.assertEqual(self.client.post(self.url, self.data).status_code, 400)
+        self.assertEqual(self.client.post(self.url, self.data).status_code, 403)
 
     def test_subscription_create_update_delete_uses_service(self):
         response = self.client.post(self.url, self.data)
@@ -70,7 +69,8 @@ class SkeletonTests(TestCase):
         detail = f"{self.url}{subscription.pk}/"
         self.assertEqual(self.client.patch(detail, {"active": False}).status_code, 200)
         subscription.refresh_from_db()
-        self.assertFalse(subscription.active)
+        self.assertFalse(subscription.enabled)
+        self.assertFalse(subscription.is_deleted)
         self.assertEqual(self.client.delete(detail).status_code, 204)
 
     def test_subscription_owner_isolation(self):
@@ -126,7 +126,7 @@ class SkeletonTests(TestCase):
         client = MagicMock(send=AsyncMock(return_value=204))
         notify_subscribers("Example", self.owner.pk, client)
         client.send.assert_awaited_once()
-        self.assertEqual(client.send.call_args.args[1]["data"], {"id": self.owner.pk, "name": "owner"})
+        self.assertEqual(client.send.call_args.args[1]["data"], {"id": str(self.owner.pk), "name": "owner"})
         self.assertTrue(NotificationResult.objects.get().successful)
 
     @override_settings(PWP_API={"notifications_enabled": True,
@@ -134,16 +134,15 @@ class SkeletonTests(TestCase):
     def test_revoked_rights_expiry_and_destination_disable_delivery(self):
         sub = self.subscription()
         client = MagicMock(send=AsyncMock(return_value=200))
-        self.owner.user_permissions.clear()
+        revoke_right(self.owner, 900001)
         notify_subscribers("Example", self.owner.pk, client)
-        self.owner.user_permissions.add(Permission.objects.get(
-            codename="view_subscription", content_type__app_label="pwp_api"))
+        grant_right(self.owner, 900001)
         sub.expires_at = timezone.now() - timedelta(seconds=1)
-        sub.save()
+        sub.save(user=self.owner)
         notify_subscribers("Example", self.owner.pk, client)
         sub.expires_at = timezone.now() + timedelta(days=1)
         sub.endpoint = "https://removed.example/events"
-        sub.save()
+        sub.save(user=self.owner)
         notify_subscribers("Example", self.owner.pk, client)
         client.send.assert_not_called()
 
