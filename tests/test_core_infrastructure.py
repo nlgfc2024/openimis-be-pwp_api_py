@@ -1,12 +1,12 @@
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from core.models import HistoryBusinessModel
+from core.models import HistoryBusinessModel, MutationLog
 from core.services import BaseService
 from core.validation import BaseModelValidation
 from django.test import TestCase, override_settings
 from django.utils import timezone
-from rest_framework.test import APIClient
+from tests.graphql_helpers import execute, mutate
 
 from pwp_api.models import NotificationResult, Subscription
 from pwp_api.notifications import notify_subscribers
@@ -20,9 +20,6 @@ class CoreInfrastructureTests(TestCase):
         self.user = create_user("actor")
         self.other = create_user("other_actor")
         self.service = SubscriptionService(self.user)
-        self.client = APIClient()
-        self.client.force_authenticate(self.user)
-        self.url = "/pwp_api/v1/subscriptions/"
         self.payload = {
             "resource": "Example", "endpoint": "https://partner.example/events", "enabled": True,
             "expires_at": timezone.now() + timedelta(days=1),
@@ -60,20 +57,21 @@ class CoreInfrastructureTests(TestCase):
         self.assertEqual(sub.history.first().user_updated_id, self.user.pk)
         self.assertEqual(sub.history.first().history_user_id, self.user.pk)
         self.assertFalse(self.service.get_queryset().exists())
-        self.assertEqual(self.client.get(f"{self.url}{sub.pk}/").status_code, 404)
-        self.assertEqual(self.client.get(self.url).data["results"], [])
+        self.assertEqual(execute(self.user, "{ pwpSubscriptions { id } }").data["pwpSubscriptions"], [])
 
-    def test_api_enforces_each_numeric_operation_right(self):
+    def test_graphql_enforces_each_numeric_operation_right(self):
         sub = self.create_subscription()
-        cases = ((158001, "get", self.url, None), (158002, "post", self.url, {}),
-                 (158003, "patch", f"{self.url}{sub.pk}/", {"active": False}),
-                 (158004, "delete", f"{self.url}{sub.pk}/", None))
-        for right, method, url, data in cases:
-            with self.subTest(right=right):
-                revoke_right(self.user, right)
-                response = getattr(self.client, method)(url, data=data)
-                self.assertEqual(response.status_code, 403)
-                grant_right(self.user, right)
+        revoke_right(self.user, 158001)
+        self.assertTrue(execute(self.user, "{ pwpSubscriptions { id } }").errors)
+        grant_right(self.user, 158001)
+        payload = {"resource": "Example", "endpoint": self.payload["endpoint"],
+                   "expiresAt": self.payload["expires_at"].isoformat()}
+        for right, operation, data in ((158002, "create", payload),
+                                       (158003, "update", {"id": str(sub.pk), "enabled": False}),
+                                       (158004, "delete", {"id": str(sub.pk)})):
+            revoke_right(self.user, right)
+            self.assertEqual(mutate(self.user, operation, data).status, MutationLog.ERROR)
+            grant_right(self.user, right)
 
     def test_direct_service_cannot_bypass_operation_rights(self):
         sub = self.create_subscription()
@@ -125,7 +123,7 @@ class CoreInfrastructureTests(TestCase):
 
     @override_settings(PWP_API={"subscription_search_perms": []})
     def test_empty_permission_configuration_denies_access(self):
-        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.assertTrue(execute(self.user, "{ pwpSubscriptions { id } }").errors)
 
     @override_settings(PWP_API={"notifications_enabled": True,
                                 "notification_endpoints": ["https://partner.example/events"]})
@@ -153,12 +151,12 @@ class CoreInfrastructureTests(TestCase):
             raise RuntimeError("internal secret diagnostic")
 
         with patch.object(BaseService, "save_instance", save_then_fail):
-            response = self.client.post(self.url, {
-                "resource": "Example", "endpoint": self.payload["endpoint"], "active": True,
-                "expires_at": self.payload["expires_at"].isoformat(),
+            response = mutate(self.user, "create", {
+                "resource": "Example", "endpoint": self.payload["endpoint"], "enabled": True,
+                "expiresAt": self.payload["expires_at"].isoformat(),
             })
-        self.assertEqual(response.status_code, 400)
-        self.assertNotIn("internal secret", str(response.data))
+        self.assertEqual(response.status, MutationLog.ERROR)
+        self.assertNotIn("internal secret", str(response.error))
         self.assertFalse(Subscription.objects.exists())
         self.assertFalse(Subscription.history.exists())
 
@@ -182,7 +180,6 @@ class CoreInfrastructureTests(TestCase):
     def test_update_and_delete_rights_do_not_require_search_right(self):
         sub = self.create_subscription()
         revoke_right(self.user, 158001)
-        detail = f"{self.url}{sub.pk}/"
-        self.assertEqual(self.client.get(detail).status_code, 403)
-        self.assertEqual(self.client.patch(detail, {"active": False}).status_code, 200)
-        self.assertEqual(self.client.delete(detail).status_code, 204)
+        self.assertTrue(execute(self.user, "{ pwpSubscriptions { id } }").errors)
+        self.assertEqual(mutate(self.user, "update", {"id": str(sub.pk), "enabled": False}).status, MutationLog.SUCCESS)
+        self.assertEqual(mutate(self.user, "delete", {"id": str(sub.pk)}).status, MutationLog.SUCCESS)

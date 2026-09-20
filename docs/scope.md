@@ -5,15 +5,17 @@ PR source: `feature/pwp-api-skeleton`. PR base: `mw/develop`. Keep the PR in dra
 
 | Current task | Issue | Deliverable |
 |---|---|---|
-| Identity and registration | #1 | Distribution, app, configuration and v1 routes |
-| API infrastructure | #2 | Registry, views, serializers, converters, permissions and services |
+| Identity and registration | #1 | Distribution, app and configuration identity |
+| API infrastructure | #2 | Registry, typed GraphQL projections, converters, permissions and services |
 | Subscriptions | #3 | Independent persistence, ownership and post-commit notification extension |
 | Validation and docs | #4 | Core-backed tests, CI, package and schema checks |
 | Retain generic core infrastructure | #9 | Numeric operation rights, history/audit, core services and validation |
+| Native GraphQL interface | #10 | Host Query/Mutation composition, typed variables, core mutation logging and schema docs |
 
 No live Individual/Group data source, business service binding, or host manifest edit
 is included. Insurance-specific implementations, fixtures, mappings and dependencies
-are removed. Contracts are plain JSON; no FHIR conformance is claimed.
+are removed. The shared host GraphQL endpoint replaces the draft REST/OpenAPI interface;
+GraphQL inputs/outputs and webhook JSON have no FHIR conformance claim.
 
 ## Independent app
 
@@ -52,11 +54,13 @@ the work they implement.
 
 The suite uses the actual pinned Mlatho core models, role-right evaluation,
 BaseService, BaseModelValidation and HistoryBusinessModel, with SQLite and a
-test-only resource adapter. Only unused core location foreign-key targets are
-stubbed. Core schema is synchronized without running its legacy migrations;
+test-only resource adapter. The real pinned location module satisfies core
+GraphQL imports; only its unused medical-pricelist foreign-key targets are stubbed. Core schema is synchronized without running its legacy migrations;
 PWP's initial migration and generated history model are tested normally.
 Tests cover numeric rights, ownership, direct service validation, audit actors,
 versioning, soft deletion, rollback, schema, notifications and transaction callbacks.
-Login remains mocked at the host boundary. Core JWT authentication, full-host
+Tests compose module Query/Mutation using host-style inheritance and exercise
+real core mutation logging and worker execution. Authentication is supplied as
+a request context; host JWT middleware, full-host
 PostgreSQL migrations, actual Mlatho queries and live delivery remain outside this
 suite's scope.

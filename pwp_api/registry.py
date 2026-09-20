@@ -1,6 +1,7 @@
 import re
 from dataclasses import dataclass
 
+from graphene.utils.str_converters import to_camel_case
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.module_loading import import_string
@@ -14,7 +15,7 @@ class ResourceAdapter:
     name: str
     service_class: type
     converter_class: type
-    serializer_class: type
+    graphql_type: type
     read_permissions: tuple
     subscriptions_enabled: bool = False
 
@@ -30,22 +31,23 @@ class ResourceRegistry:
         self._adapters = {}
 
     def register(self, adapter):
-        from .serializers import ResourceSerializer
+        from graphene import ObjectType
 
         if not isinstance(adapter, ResourceAdapter):
             raise ImproperlyConfigured("PWP_API_ADAPTERS entries must be ResourceAdapter objects")
-        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,79}", adapter.name):
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", adapter.name):
             raise ImproperlyConfigured("Invalid PWP resource name")
         if adapter.name.lower() in {"login", "subscriptions", "docs"}:
             raise ImproperlyConfigured("Reserved PWP resource name")
-        if any(name.lower() == adapter.name.lower() for name in self._adapters):
+        if any(to_camel_case(name).lower() == to_camel_case(adapter.name).lower()
+               for name in self._adapters):
             raise ImproperlyConfigured("Duplicate PWP resource name")
         if not adapter.read_permissions:
             raise ImproperlyConfigured("PWP adapters require explicit read permissions")
         for implementation, base in (
             (adapter.service_class, ResourceService),
             (adapter.converter_class, ResourceConverter),
-            (adapter.serializer_class, ResourceSerializer),
+            (adapter.graphql_type, ObjectType),
         ):
             if not issubclass(implementation, base):
                 raise ImproperlyConfigured(f"PWP adapter must implement {base.__name__}")

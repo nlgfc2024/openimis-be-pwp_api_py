@@ -1,13 +1,13 @@
+from core.models import MutationLog
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from django.apps import apps
 from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.test import TestCase, override_settings
-from django.urls import resolve, reverse
 from django.utils import timezone
-from rest_framework.test import APIClient
+from django.contrib.auth.models import AnonymousUser
+from tests.graphql_helpers import execute, mutate, schema
 
 from pwp_api.models import NotificationResult, Subscription
 from pwp_api.notifications import NotificationClient, notify_subscribers, publish_resource
@@ -21,11 +21,8 @@ class SkeletonTests(TestCase):
     def setUp(self):
         self.owner = create_user("owner")
         self.other = create_user("other")
-        self.client = APIClient()
-        self.client.force_authenticate(self.owner)
-        self.url = "/pwp_api/v1/subscriptions/"
-        self.data = {"resource": "Example", "active": True, "endpoint": "https://partner.example/events",
-                     "expires_at": (timezone.now() + timedelta(days=1)).isoformat()}
+        self.data = {"resource": "Example", "enabled": True, "endpoint": "https://partner.example/events",
+                     "expiresAt": (timezone.now() + timedelta(days=1)).isoformat()}
 
     def subscription(self, owner=None):
         result = SubscriptionService(owner or self.owner).create({
@@ -35,67 +32,67 @@ class SkeletonTests(TestCase):
         self.assertTrue(result["success"], result)
         return Subscription.objects.get(pk=result["data"]["id"])
 
-    def test_identity_and_versioned_routes(self):
-        self.assertEqual(apps.get_app_config("pwp_api").__class__.__name__, "PwpApiConfig")
-        self.assertEqual(reverse("pwp_api:subscription-list"), self.url)
-        self.assertEqual(resolve(self.url).namespace, "pwp_api")
-        for path in ("/api_fhir_r4/Patient/", "/pwp_api/Patient/", "/pwp_api/v1/Patient/",
-                     "/pwp_api/v1/Group/", "/pwp_api/v1/Claim/"):
-            self.assertEqual(self.client.get(path).status_code, 404)
-
     def test_anonymous_requests_denied(self):
-        self.client = APIClient()
-        for path in (self.url, "/pwp_api/v1/Example/", "/pwp_api/v1/docs/"):
-            self.assertEqual(self.client.get(path).status_code, 401)
+        result = execute(AnonymousUser(), "{ pwpSubscriptions { id } pwpResourceExample { id } }")
+        self.assertEqual(len(result.errors), 2)
 
     def test_resource_service_and_converter_scope(self):
-        response = self.client.get("/pwp_api/v1/Example/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["results"], [{"id": str(self.owner.pk), "name": "owner"}])
-        self.assertEqual(self.client.get(f"/pwp_api/v1/Example/{self.other.pk}/").status_code, 404)
-        self.assertEqual(self.client.post("/pwp_api/v1/Example/", {}).status_code, 405)
+        result = execute(self.owner, "{ pwpResourceExample(limit: 10) { id name } }")
+        self.assertFalse(result.errors, result.errors)
+        self.assertEqual(result.data["pwpResourceExample"], [{"id": str(self.owner.pk), "name": "owner"}])
 
     def test_missing_resource_permission_denied(self):
-        user = create_user("no_rights", rights=(158002,))
-        self.client.force_authenticate(user)
-        self.assertEqual(self.client.get("/pwp_api/v1/Example/").status_code, 403)
-        self.assertEqual(self.client.post(self.url, self.data).status_code, 403)
+        revoke_right(self.owner, 900001)
+        self.assertTrue(execute(self.owner, "{ pwpResourceExample { id } }").errors)
+        self.assertEqual(mutate(self.owner, "create", self.data).status, MutationLog.ERROR)
 
-    def test_subscription_create_update_delete_uses_service(self):
-        response = self.client.post(self.url, self.data)
-        self.assertEqual(response.status_code, 201, response.data)
-        subscription = Subscription.objects.get(pk=response.data["id"])
-        self.assertEqual(subscription.owner, self.owner)
-        detail = f"{self.url}{subscription.pk}/"
-        self.assertEqual(self.client.patch(detail, {"active": False}).status_code, 200)
-        subscription.refresh_from_db()
-        self.assertFalse(subscription.enabled)
-        self.assertFalse(subscription.is_deleted)
-        self.assertEqual(self.client.delete(detail).status_code, 204)
+    def test_subscription_create_update_delete_uses_core_mutation_log(self):
+        log = mutate(self.owner, "create", {**self.data, "clientMutationId": "pwp-test-1"})
+        self.assertEqual(log.status, MutationLog.SUCCESS, log.error)
+        self.assertEqual(log.client_mutation_id, "pwp-test-1")
+        sub = Subscription.objects.get()
+        self.assertEqual(sub.owner, self.owner)
+        self.assertEqual(mutate(self.owner, "update", {"id": str(sub.pk), "enabled": False}).status,
+                         MutationLog.SUCCESS)
+        sub.refresh_from_db()
+        self.assertFalse(sub.enabled)
+        self.assertEqual(mutate(self.owner, "delete", {"id": str(sub.pk)}).status, MutationLog.SUCCESS)
+        sub.refresh_from_db()
+        self.assertTrue(sub.is_deleted)
+        self.assertEqual(sub.history.count(), 3)
 
     def test_subscription_owner_isolation(self):
         own = self.subscription()
         foreign = self.subscription(self.other)
-        self.assertEqual([r["id"] for r in self.client.get(self.url).data["results"]], [str(own.pk)])
-        detail = f"{self.url}{foreign.pk}/"
-        self.assertEqual(self.client.get(detail).status_code, 404)
-        self.assertEqual(self.client.patch(detail, {"active": False}).status_code, 404)
-        self.assertEqual(self.client.delete(detail).status_code, 404)
+        result = execute(self.owner, "{ pwpSubscriptions { id } }")
+        self.assertFalse(result.errors, result.errors)
+        self.assertEqual(result.data["pwpSubscriptions"], [{"id": str(own.pk)}])
+        result = execute(self.owner, "query($id: UUID!) { pwpSubscriptions(id: $id) { id } }",
+                         {"id": str(foreign.pk)})
+        self.assertEqual(result.data["pwpSubscriptions"], [])
+        self.assertEqual(mutate(self.owner, "update", {"id": str(foreign.pk), "enabled": False}).status,
+                         MutationLog.ERROR)
+        self.assertEqual(mutate(self.owner, "delete", {"id": str(foreign.pk)}).status, MutationLog.ERROR)
 
     def test_unregistered_resource_and_unapproved_endpoint_rejected(self):
-        for change in ({"resource": "Patient"}, {"resource": "Group"},
+        for change in ({"resource": "Individual"}, {"resource": "Group"},
                        {"endpoint": "https://unapproved.example/events"},
                        {"endpoint": "http://partner.example/events"},
-                       {"expires_at": (timezone.now() - timedelta(days=1)).isoformat()}):
-            self.assertEqual(self.client.post(self.url, {**self.data, **change}).status_code, 400)
+                       {"expiresAt": (timezone.now() - timedelta(days=1)).isoformat()}):
+            self.assertEqual(mutate(self.owner, "create", {**self.data, **change}).status, MutationLog.ERROR)
+        self.assertFalse(Subscription.objects.exists())
 
-    def test_schema_is_module_scoped_and_pwp_branded(self):
-        response = self.client.get("/pwp_api/v1/docs/", HTTP_ACCEPT="application/vnd.oai.openapi+json")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["info"]["title"], "openIMIS PWP API")
-        self.assertIn(self.url, response.data["paths"])
-        self.assertTrue(all(p.startswith("/pwp_api/v1/") for p in response.data["paths"]))
-        self.assertNotIn("Patient", str(response.data["paths"]))
+    def test_schema_has_only_explicit_fields_and_no_domain_adapters(self):
+        result = schema.introspect()
+        types = {t["name"]: t for t in result["__schema"]["types"]}
+        fields = {f["name"] for f in types["PwpSubscriptionType"]["fields"]}
+        self.assertEqual(fields, {"id", "resource", "endpoint", "enabled", "expiresAt",
+                                  "dateCreated", "dateUpdated"})
+        self.assertNotIn("Patient", str(schema))
+        self.assertNotIn("pwpResourceIndividual", str(schema))
+        self.assertNotIn("pwpResourceGroup", str(schema))
+        for path in ("/pwp_api/v1/subscriptions/", "/pwp_api/v1/login/", "/pwp_api/v1/docs/"):
+            self.assertEqual(self.client.get(path).status_code, 404)
 
     def test_registry_requires_explicit_contract_and_rejects_duplicates(self):
         registry = ResourceRegistry()
@@ -103,13 +100,18 @@ class SkeletonTests(TestCase):
         with self.assertRaises(ImproperlyConfigured):
             registry.register(example)
 
-    @patch("pwp_api.views.issue_token", return_value={"token": "test-token", "exp": 123})
-    def test_login_delegates_to_host_authentication(self, issue_token):
-        response = self.client.post("/pwp_api/v1/login/", {"username": "owner", "password": "secret"})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, {"token": "test-token", "exp": 123})
-        self.assertEqual(issue_token.call_args.kwargs, {"username": "owner", "password": "secret"})
-        self.assertEqual(self.client.post("/pwp_api/v1/login/", {}).status_code, 400)
+    def test_bounded_pagination_and_typed_arguments(self):
+        for arguments in ("limit: 101", "limit: 0", "offset: -1", "limit: null", 'limit: "x"'):
+            self.assertTrue(execute(self.owner, "{ pwpResourceExample(" + arguments + ") { id } }").errors)
+        result = execute(self.owner, "{ pwpResourceExample(limit: 1, offset: 1) { id } }")
+        self.assertEqual(result.data["pwpResourceExample"], [])
+        for change in ({"owner": str(self.other.pk)}, {"expiresAt": "bad-date"}):
+            result = execute(self.owner,
+                             "mutation($input: CreatePwpSubscriptionMutationInput!) { "
+                             "createPwpSubscription(input: $input) { internalId } }",
+                             {"input": {**self.data, **change}})
+            self.assertTrue(result.errors, change)
+        self.assertFalse(Subscription.objects.exists())
 
     def test_delivery_disabled_by_default(self):
         self.subscription()
@@ -183,3 +185,24 @@ class SkeletonTests(TestCase):
         self.assertEqual(asyncio.run(NotificationClient().send(self.data["endpoint"], {"id": "a"})), 204)
         response.json.assert_not_called()
         self.assertFalse(session.post.call_args.kwargs["allow_redirects"])
+
+    @patch("core.async_mutations", True)
+    @patch("core.schema.openimis_mutation_async.delay")
+    def test_native_worker_loads_schema_class_and_rechecks_permissions(self, delay):
+        from core.tasks import openimis_mutation_async
+
+        payload = {**self.data, 'mutationExtensions': '{"source": "test"}'}
+        log = mutate(self.owner, "create", payload)
+        self.assertEqual(log.status, MutationLog.RECEIVED)
+        delay.assert_called_once_with(log.pk, "pwp_api", "CreatePwpSubscriptionMutation")
+        self.assertFalse(Subscription.objects.exists())
+        openimis_mutation_async.run(log.pk, "pwp_api", "CreatePwpSubscriptionMutation")
+        log.refresh_from_db()
+        self.assertEqual(log.status, MutationLog.SUCCESS, log.error)
+        self.assertEqual(Subscription.objects.count(), 1)
+        pending = mutate(self.owner, "create", self.data)
+        revoke_right(self.owner, 158002)
+        openimis_mutation_async.run(pending.pk, "pwp_api", "CreatePwpSubscriptionMutation")
+        pending.refresh_from_db()
+        self.assertEqual(pending.status, MutationLog.ERROR)
+        self.assertEqual(Subscription.objects.count(), 1)

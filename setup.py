@@ -22,8 +22,8 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "django>=4.2,<5.0",
-        "djangorestframework>=3.14,<4",
-        "drf-spectacular>=0.25,<1",
+        "graphene>=2.1.9,<3",
+        "graphene-django>=2.16,<3",
         "aiohttp>=3.13.3,<4",
         "openimis-be-core>=1.11,<2",
         "django-simple-history>=3.8,<4",

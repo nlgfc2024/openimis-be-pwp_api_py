@@ -10,7 +10,7 @@ insurance or other business-data source is implemented or registered yet.
 | Python package / Django app / configuration key | `pwp_api` |
 | AppConfig | `pwp_api.apps.PwpApiConfig` |
 | Independent package version | `0.1.0` |
-| API prefix | `<SITE_ROOT>/pwp_api/v1/` |
+| GraphQL endpoint | Host `<SITE_ROOT>/graphql` |
 
 ## Installation
 
@@ -24,52 +24,103 @@ and migration workflow:
 }
 ```
 
-Use a pinned revision or built package for deployment. The host mounts this app
-at `<SITE_ROOT>/pwp_api/`; the app adds `v1/`. In ordinary Django, use
-`path("pwp_api/", include("pwp_api.urls"))`.
+Use a pinned revision or built package for deployment. The host discovers
+`pwp_api.schema.Query` and `pwp_api.schema.Mutation` and composes them with other
+modules at `<SITE_ROOT>/graphql`. The module's `urls.py` deliberately exports no
+routes. Its identity remains `pwp_api`; there is no separate PWP GraphQL server.
 
-The host supplies openIMIS core authentication and REST framework authentication
-settings plus `drf_spectacular.openapi.AutoSchema`. The module inherits those
-authentication classes and does not bypass session CSRF checks. Login delegates
-to the host's authentication and JWT functions.
+Authentication, JWT middleware, CSRF policy and GraphQL tooling come from the
+host. Use its existing login/token flow. GraphQL still uses HTTP: clients POST a
+query/mutation document plus a JSON `variables` object, instead of resource URLs
+and REST query parameters. Subtask #10 supersedes the earlier draft's
+`/pwp_api/v1/` routes and OpenAPI/Swagger/ReDoc interface.
 
 This is a new application, not an in-place upgrade of api_fhir_r4. Keep upstream
 FHIR installed separately when needed. PWP creates only its own tables and does
 not adopt FHIR migration history or subscriptions. See [scope notes](docs/scope.md).
 
-## Available routes
+## GraphQL contract
 
-| Route under module prefix | Purpose |
+The reviewed empty-registry [schema](docs/schema.graphql) is checked by CI. Use
+the host's schema introspection/GraphiQL facilities where enabled.
+
+| GraphQL field | Purpose |
 |---|---|
-| `v1/login/` | POST username/password; host returns token and expiry |
-| `v1/subscriptions/` | Authenticated, owner-scoped subscription CRUD |
-| `v1/docs/` | Authenticated, module-only OpenAPI schema |
-| `v1/docs/swagger/` | Authenticated Swagger UI |
-| `v1/docs/redoc/` | Authenticated ReDoc |
+| `pwpSubscriptions(limit, offset, id)` | Owned, undeleted webhook registrations |
+| `createPwpSubscription(input)` | Create through core validation/service |
+| `updatePwpSubscription(input)` | Update an owned registration |
+| `deletePwpSubscription(input)` | Soft-delete an owned registration |
+| `pwpResource<Name>(limit, offset)` | Read-only projection for each explicitly registered adapter |
 
-Business routes are absent. Subscription creation rejects all resources until an
-explicit adapter is registered and opts into subscriptions. Contracts use plain
-versioned JSON and DRF errors, not the inherited FHIR payload format.
+Lists default to 25 records, allow at most 100 and require a nonnegative offset.
+There are no arbitrary ORM filters or unbounded nested model relationships.
+No Individual or Group field exists yet. Subscription creation rejects unknown
+resources, including all resources when the production registry is empty.
+
+```graphql
+query Registrations($limit: Int!, $offset: Int!) {
+  pwpSubscriptions(limit: $limit, offset: $offset) {
+    id resource enabled expiresAt
+  }
+}
+```
+
+Variables: `{"limit": 25, "offset": 0}`.
+
+Once a future source adapter is registered, clients can create a registration:
+
+```graphql
+mutation Register($input: CreatePwpSubscriptionMutationInput!) {
+  createPwpSubscription(input: $input) { internalId clientMutationId }
+}
+```
+
+For the test-only Example adapter, variables take this shape (choose an approved
+endpoint and a future expiry in the deployment):
+
+```json
+{
+  "input": {
+    "resource": "Example",
+    "endpoint": "https://partner.example/events",
+    "enabled": true,
+    "expiresAt": "2099-01-01T00:00:00",
+    "clientMutationId": "registration-1",
+    "clientMutationLabel": "Register partner webhook"
+  }
+}
+```
+
+Mutations inherit `core.schema.OpenIMISMutation`: core records the request,
+runs validation signals and executes synchronously or through its configured
+worker. `internalId` identifies the **mutation log**, not the subscription.
+Acceptance is not proof of success: use the host's mutation-status query with
+`clientMutationId` and inspect errors before refreshing `pwpSubscriptions`.
+Input coercion follows the host's Graphene 2 conventions. Worker execution
+rechecks permission and ownership through the same service as synchronous calls.
 
 ## Extension interfaces
 
 - `ResourceService`: return an authorized, deterministically ordered queryset
   using source-module access rules and additional consumer restrictions.
-- `ResourceConverter`: map records to a stable external contract with explicit
-  field allowlists. Implement inbound conversion only for an approved write flow.
-- `ResourceSerializer`: declare concrete fields for OpenAPI; delegate conversion
-  to the adapter converter.
-- `ResourceAdapter`: combine service, converter, serializer, unique resource name,
-  nonempty read-permission tuple, and explicit subscription opt-in.
-- `PWP_API_ADAPTERS`: Django setting of dotted paths to trusted adapter objects;
-  defaults to empty. Routes expose list/detail only. Writes need separate commands.
-- `signals.bind_service_signals()`: host discovery hook, intentionally with no
-  source bindings. Future adapters can bind approved service events and call
+- `ResourceConverter`: map records to an explicit external field allowlist.
+  The read resolver and notification delivery use the same converter. Inbound
+  conversion remains an extension point for future approved source mutations.
+- `ResourceAdapter`: combine service, converter, `graphql_type` (a concrete
+  `graphene.ObjectType` projection), unique GraphQL-safe resource name,
+  nonempty read-permission tuple and explicit subscription opt-in. GraphQL
+  types replace DRF serializers for schema declaration and response serialization.
+- `PWP_API_ADAPTERS`: trusted dotted adapter paths, empty by default. Schema
+  assembly exposes typed, prefixed read fields; restart after registry changes.
+  Source writes and source-specific filters require deliberate typed additions.
+- `signals.bind_service_signals()`: intentionally empty host discovery hook.
+  Future adapters can bind approved service events to
   `notifications.publish_resource(resource_name, primary_key)`.
 
-The [test-only Example adapter](tests/adapters.py) demonstrates the interface with
-real openIMIS user/role fixtures. It is not a Mlatho resource and is excluded from the wheel.
-Do not expose arbitrary models, full json_ext fields, or unrestricted querysets.
+The [test-only Example adapter](tests/adapters.py) demonstrates conversion and
+scope with real openIMIS user/role fixtures; it is excluded from the wheel.
+Do not expose arbitrary models, full `json_ext` fields or unrestricted querysets.
+Do not add a Relay node lookup that bypasses service-level row permissions.
 
 ## Subscription configuration and limitations
 
@@ -89,12 +140,12 @@ PWP_API = {
 PWP_API_ADAPTERS = []
 ```
 
-Subscription input: `resource`, `endpoint`, `active`, `expires_at`. Ownership is
+Subscription input: `resource`, `endpoint`, `enabled`, `expiresAt`. Ownership is
 assigned from the authenticated user, never the payload. Lists, details and
 mutations are owner-scoped and require the configured operation right.
 Creation/update additionally requires resource rights and an approved HTTPS destination. No arbitrary ORM criteria or caller-supplied
-credential headers are accepted. The API's `active` flag maps to `enabled` internally
-and defaults to false; it controls delivery, not record deletion.
+credential headers are accepted. `enabled` defaults to false and controls delivery.
+The inherited model `active` property still reflects soft-deletion status.
 
 Subscription search/create/update/delete deliberately reuse rights 158001–158004
 by default. Existing holders of those FHIR subscription rights can perform the
@@ -108,17 +159,19 @@ Subscriptions inherit `core.models.HistoryBusinessModel`: actor audit fields,
 versioning, historical snapshots, business validity and soft deletion are retained.
 Mutations call `core.services.BaseService` with `BaseModelValidation`-based checks,
 including for direct service callers. History records include the acting user.
-DELETE marks the subscription deleted and preserves its history and delivery results;
+`deletePwpSubscription` marks the subscription deleted and preserves its history and delivery results;
 deleted records are excluded from API queries and notification delivery.
 
 Delivery rechecks recipient rights and recipient-scoped visibility, expiry,
-active status and destination approval. It does not follow redirects. All 2xx
+enabled status and destination approval. It does not follow redirects. All 2xx
 responses, including empty 204, are accepted. Results store status and sanitized
 errors, not response bodies or resource payloads. Destination configuration is an
 administrator trust boundary: configure controlled endpoints and enforce network
 egress restrictions when deploying delivery.
 
-`publish_resource()` waits for commit, then delivers synchronously. This is not a
+These subscriptions register outbound HTTP webhooks; they are not GraphQL
+`subscription` operations or WebSocket streams. `publish_resource()` waits for
+commit, then delivers synchronously. This is not a
 durable queue: crashes can lose notifications and slow receivers can delay the
 caller. Retries, signing, replay, delete/revocation events, consumer credentials
 and offline synchronization belong to follow-up #7. Keep notifications disabled
@@ -132,14 +185,15 @@ Isolated checks need no openIMIS database or insurance modules:
 python -m pip install -r requirements-test.txt
 python -m django test tests --settings=tests.settings
 python -m django makemigrations --check --dry-run --settings=tests.empty_settings
-python -m django spectacular --settings=tests.empty_settings --urlconf=pwp_api.schema_urls --validate --fail-on-warn --file=/tmp/pwp-schema.yml
+python -m tests.check_schema
 python -m build
 ```
 
-CI installs a pinned Mlatho core revision and exercises its actual models,
-role rights, services, validation and history against SQLite. Two minimal test-only
-location models satisfy unused core foreign keys; they provide no location behavior.
-Core/location legacy migrations are not run in this harness; PWP migrations are.
+CI installs pinned Mlatho core and location revisions and exercises actual core
+models, role rights, mutation logs, worker execution, services and history against
+SQLite. Two minimal test-only medical-pricelist models satisfy unused location
+foreign keys; no medical behavior is provided. Core/location legacy migrations
+are not run in this harness; PWP migrations are.
 Full assembled-host authentication and PostgreSQL migration validation remain
 required before deployment. Initial targets: Python 3.10–3.12 and Django 4.2.
 Inherited FHIR publication automation is removed; no package is auto-published.
@@ -150,7 +204,8 @@ Current PR tasks: [#1](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issue
 [#2](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/2),
 [#3](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/3),
 [#4](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/4),
-[#9](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/9) (retain core infrastructure).
+[#9](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/9) (retain core infrastructure),
+[#10](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/10) (native GraphQL interface).
 
 Separate future PRs:
 - [#5](https://github.com/nlgfc2024/openimis-be-pwp_api_py/issues/5): Individual from individual.Individual.

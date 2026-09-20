@@ -25,7 +25,7 @@ jobs:
       - run: python -m flake8 pwp_api tests --max-line-length=120
       - run: python -m django test tests --settings=tests.settings
       - run: python -m django makemigrations --check --dry-run --settings=tests.empty_settings
-      - run: python -m django spectacular --settings=tests.empty_settings --urlconf=pwp_api.schema_urls --validate --fail-on-warn --file=/tmp/pwp-schema.yml
+      - run: python -m tests.check_schema
       - run: python -m build
       - name: Check wheel namespace and metadata
         run: python tests/check_wheel.py
