@@ -1,4 +1,3 @@
 include LICENSE.md
 include README.md
-include CONTRIBUTING.md
-include api_fhir_r4/tests/test/*.json
+recursive-include docs *.md *.graphql

@@ -1,0 +1,21 @@
+Django>=4.2,<5.0
+graphene-django>=2.16,<3
+django-graphql-jwt>=0.4,<0.5
+graphene-django-optimizer>=0.8,<0.9
+django-filter>=23,<25
+django-axes>=6,<7
+celery>=5,<6
+aiohttp>=3.13.3,<4
+build>=1,<2
+flake8>=7,<8
+# Exercise the same real Mlatho core revision inspected for this change.
+openimis-be-core @ https://github.com/nlgfc2024/openimis-be-core_py/archive/2759c3af0e29c38df6e60efd3271af1beb29a5ac.tar.gz
+# Core imports these host-provided libraries during app/model initialization.
+graphene>=2.1.9,<3
+django-apscheduler>=0.6.2,<0.7
+APScheduler>=3.10,<4
+setuptools>=68,<81
+
+# Core GraphQL imports location types; use the installed Mlatho revision.
+openimis-be-location @ https://github.com/nlgfc2024/openimis-be-location_py/archive/88b8f6a11cfd282be5fa3679eb96b246223e4d33.tar.gz
+django-redis>=5,<6

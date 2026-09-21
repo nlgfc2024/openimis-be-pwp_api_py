@@ -1,0 +1,77 @@
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+input CreatePwpSubscriptionMutationInput {
+  clientMutationLabel: String
+  clientMutationDetails: [String]
+  mutationExtensions: ParsedJSONString
+  resource: String!
+  endpoint: String!
+  enabled: Boolean = false
+  expiresAt: DateTime!
+  clientMutationId: String
+}
+
+type CreatePwpSubscriptionMutationPayload {
+  internalId: String
+  clientMutationId: String
+}
+
+scalar DateTime
+
+input DeletePwpSubscriptionMutationInput {
+  clientMutationLabel: String
+  clientMutationDetails: [String]
+  mutationExtensions: ParsedJSONString
+  id: UUID!
+  clientMutationId: String
+}
+
+type DeletePwpSubscriptionMutationPayload {
+  internalId: String
+  clientMutationId: String
+}
+
+type Mutation {
+  createPwpSubscription(input: CreatePwpSubscriptionMutationInput!): CreatePwpSubscriptionMutationPayload
+  updatePwpSubscription(input: UpdatePwpSubscriptionMutationInput!): UpdatePwpSubscriptionMutationPayload
+  deletePwpSubscription(input: DeletePwpSubscriptionMutationInput!): DeletePwpSubscriptionMutationPayload
+}
+
+scalar ParsedJSONString
+
+type PwpSubscriptionType {
+  id: UUID!
+  dateCreated: DateTime
+  dateUpdated: DateTime
+  resource: String!
+  endpoint: String!
+  enabled: Boolean!
+  expiresAt: DateTime!
+}
+
+type Query {
+  pwpSubscriptions(limit: Int = 25, offset: Int = 0, id: UUID): [PwpSubscriptionType]
+}
+
+scalar UUID
+
+input UpdatePwpSubscriptionMutationInput {
+  clientMutationLabel: String
+  clientMutationDetails: [String]
+  mutationExtensions: ParsedJSONString
+  id: UUID!
+  resource: String
+  endpoint: String
+  enabled: Boolean
+  expiresAt: DateTime
+  clientMutationId: String
+}
+
+type UpdatePwpSubscriptionMutationPayload {
+  internalId: String
+  clientMutationId: String
+}
+
